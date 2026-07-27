@@ -1,0 +1,57 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+*.egg-info/
+.eggs/
+build/
+dist/
+pip-wheel-metadata/
+
+# --- Testing / tooling caches ---
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+coverage.xml
+*.cover
+
+# --- Generated runtime artifacts ---
+# SQLite caches (Stage 1/2/3)
+*.db
+*.db-wal
+*.db-shm
+# Rendered media + source media
+*.mp4
+*.wav
+*.mp3
+*.flac
+*.mov
+*.mkv
+# Stage outputs (regenerated per run)
+timeline.json
+audio_map.json
+*.directed.json
+
+# --- Archives (distributed separately) ---
+*.zip
+*.rar
+*.7z
+*.tar
+*.tar.gz
+*.tgz
+
+# --- Environment / editor ---
+.env
+.env.local
+.env.*.local
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
