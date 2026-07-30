@@ -102,8 +102,8 @@ class FilterGraphBuilder:
         
         zp = (
             f"zoompan=z='{zoom}':"
-            f"x='iw*({win.pan_x_start:.6f}+on*({step_x:.8f})) - iw/(2*z)':"
-            f"y='ih*({win.pan_y_start:.6f}+on*({step_y:.8f})) - ih/(2*z)':"
+            f"x='iw*({win.pan_x_start:.6f}+on*({step_x:.8f})) - iw/(2*zoom)':"
+            f"y='ih*({win.pan_y_start:.6f}+on*({step_y:.8f})) - ih/(2*zoom)':"
             f"d={frames}:s={self._dims_target()}:fps={fps_val:.1f}"
         )
         chain = (
