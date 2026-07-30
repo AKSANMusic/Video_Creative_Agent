@@ -76,6 +76,6 @@ def test_bounding_box_wrong_length_rejected():
 
 
 def test_payload_under_budget():
-    """Representative payload serialized JSON must be < 512 bytes."""
+    """Representative payload serialized JSON must be < 768 bytes."""
     m = ImageMetadata(**_valid_kwargs())
-    assert len(m.model_dump_json()) < 512
+    assert len(m.model_dump_json()) < 768

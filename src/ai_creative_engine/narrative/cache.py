@@ -42,6 +42,13 @@ def compute_timeline_key(
     dp_threshold: int,
     continuity_weight: float,
     section_overrides: Optional[list[Optional[float]]] = None,
+    director_enabled: bool = False,
+    pacing_reactivity: float = 0.3,
+    narrative_arc_enabled: bool = False,
+    saliency_camera_enabled: bool = False,
+    color_grading_enabled: bool = False,
+    jlcut_enabled: bool = False,
+    jlcut_max_ms: float = 400.0,
 ) -> str:
     """Deterministic composite key (sha1) for a timeline request."""
     h = hashlib.sha1()
@@ -56,6 +63,12 @@ def compute_timeline_key(
             token = "none" if ov is None else f"{ov:.6f}"
             h.update(token.encode("utf-8"))
             h.update(b",")
+    # Phase 2: Director settings
+    h.update(
+        f"|dir:{director_enabled}|pac:{pacing_reactivity:.6f}|arc:{narrative_arc_enabled}|"
+        f"sal:{saliency_camera_enabled}|col:{color_grading_enabled}|jl:{jlcut_enabled}|"
+        f"jlm:{jlcut_max_ms:.6f}".encode("utf-8")
+    )
     return h.hexdigest()
 
 

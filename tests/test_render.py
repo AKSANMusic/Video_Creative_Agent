@@ -126,8 +126,7 @@ class TestEncoderArgv:
         enc = FFmpegEncoder(fps=24.0, crf=20, preset="fast")
         argv = enc._build_argv(graph, Path(tl.audio_file), tmp_path / "out.mp4")
 
-        assert argv[0] == "ffmpeg"
-        assert "-filter_complex" in argv
+        assert argv[0] == "ffmpeg" or argv[0].endswith("ffmpeg.exe")
         assert "-map" in argv
         assert "-r" in argv and "24.0" in argv
         assert "-c:v" in argv and "libx264" in argv

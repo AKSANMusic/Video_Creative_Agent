@@ -115,6 +115,46 @@ class PlanBuilder:
         windows: list[FrameWindow] = []
         for entry in timeline.entries:
             windows.append(self._build_window(entry, total_frames))
+
+        # Apply J/L-cut offsets by shifting boundary frames (Phase 2)
+        import dataclasses
+        for i in range(1, len(windows)):
+            entry = timeline.entries[i]
+            offset_ms = getattr(entry, "audio_offset_ms", 0.0)
+            if offset_ms != 0.0:
+                offset_s = offset_ms / 1000.0
+                offset_frames = int(round(offset_s * self.fps))
+
+                base_boundary = self._sec_to_frame(entry.start)
+                new_boundary = base_boundary + offset_frames
+
+                # Clamp to ensure we don't collapse either window.
+                min_boundary = windows[i-1].start_frame + 1
+                max_boundary = windows[i].end_frame - 1
+                new_boundary = max(min_boundary, min(new_boundary, max_boundary))
+
+                windows[i-1] = dataclasses.replace(
+                    windows[i-1],
+                    end_frame=new_boundary,
+                    end_time=float(new_boundary / self.fps)
+                )
+                windows[i] = dataclasses.replace(
+                    windows[i],
+                    start_frame=new_boundary,
+                    start_time=float(new_boundary / self.fps)
+                )
+
+                # Re-clamp transition frames for both adjusted windows for safety.
+                t_frames_prev = windows[i-1].transition_frames
+                max_t_prev = min(t_frames_prev, max(0, (windows[i-1].end_frame - windows[i-1].start_frame) - 1))
+                if max_t_prev != t_frames_prev:
+                    windows[i-1] = dataclasses.replace(windows[i-1], transition_frames=max_t_prev)
+
+                t_frames_curr = windows[i].transition_frames
+                max_t_curr = min(t_frames_curr, max(0, (windows[i].end_frame - windows[i].start_frame) - 1))
+                if max_t_curr != t_frames_curr:
+                    windows[i] = dataclasses.replace(windows[i], transition_frames=max_t_curr)
+
         plan = RenderPlan(
             timeline=timeline,
             fps=self.fps,
@@ -146,9 +186,20 @@ class PlanBuilder:
             # Transition can't consume the whole window.
             trans_frames = min(trans_frames, max(0, (end_frame - start_frame) - 1))
 
-        # Deterministic pan: stay centered (0.5) so zoom is the dominant motion;
-        # tiny drift keeps it from looking static. Derived from entry index.
-        drift = 0.02 * ((entry.index % 3) - 1)  # -0.02, 0, +0.02
+        # Focus coordinates from saliency centroid (Phase 2)
+        pan_x_start = getattr(entry, "zoom_target_x", 0.5)
+        pan_y_start = getattr(entry, "zoom_target_y", 0.5)
+
+        # Subtle camera drift from focal point
+        drift_x = 0.02 * ((entry.index % 3) - 1)  # -0.02, 0, +0.02
+        drift_y = 0.01 * (((entry.index + 1) % 3) - 1)  # -0.01, 0, +0.01
+
+        pan_x_end = min(max(pan_x_start + drift_x, 0.0), 1.0)
+        pan_y_end = min(max(pan_y_start + drift_y, 0.0), 1.0)
+
+        # Dynamic zoom intensity based on director output (Phase 2)
+        zoom_end = getattr(entry, "zoom_intensity", self.zoom_end)
+
         return FrameWindow(
             index=entry.index,
             image_path=entry.file_path,
@@ -160,11 +211,11 @@ class PlanBuilder:
             transition_type=entry.transition.type,
             transition_frames=trans_frames,
             zoom_start=self.zoom_start,
-            zoom_end=self.zoom_end,
-            pan_x_start=0.5,
-            pan_x_end=min(max(0.5 + drift, 0.0), 1.0),
-            pan_y_start=0.5,
-            pan_y_end=0.5,
+            zoom_end=zoom_end,
+            pan_x_start=pan_x_start,
+            pan_x_end=pan_x_end,
+            pan_y_start=pan_y_start,
+            pan_y_end=pan_y_end,
         )
 
     def _sec_to_frame(self, seconds: float) -> int:

@@ -75,10 +75,10 @@ def test_tension_energy_buckets_images_into_sections():
     # Distinct seeds => distinct image_ids (make_image derives id from seed).
     from tests.narrative_fixtures import make_image
     images = [
-        make_image(1, tension=0.1),
-        make_image(2, tension=0.9),
-        make_image(3, tension=0.15),
-        make_image(4, tension=0.85),
+        make_image(1, tension=0.1, mood="calm"),
+        make_image(2, tension=0.9, mood="tense"),
+        make_image(3, tension=0.15, mood="calm"),
+        make_image(4, tension=0.85, mood="tense"),
     ]
     am = make_audio_map(duration=8.0, bpm=120.0, n_sections=2, energies=[0.1, 0.9])
     tl = _run(images, am)

@@ -54,26 +54,31 @@ def test_target_dim_must_be_multiple_of_8():
 
 
 def _install_fake_st(monkeypatch, model_dim: int = 384) -> None:
-    """Inject a fake SentenceTransformer producing deterministic `model_dim` vectors."""
+    """Inject a fake TextEmbedding producing deterministic `model_dim` vectors."""
 
-    class FakeST:
+    class FakeTE:
         def __init__(self, *a, **kw):
             pass
 
-        def encode(self, texts, **kw):
-            h = hashlib.sha256(texts[0].encode("utf-8")).digest()
-            # Repeat the hash enough to fill model_dim bits, then map to +1/-1.
-            buf = bytearray()
-            while len(buf) * 8 < model_dim:
-                buf.extend(h)
-            bits = [(buf[i // 8] >> (7 - (i % 8))) & 1 for i in range(model_dim)]
-            arr = np.array([1.0 if b else -1.0 for b in bits])
-            return arr.reshape(1, -1)
+        def embed(self, texts, **kw):
+            if isinstance(texts, str):
+                texts = [texts]
+            out = []
+            for t in texts:
+                h = hashlib.sha256(t.encode("utf-8")).digest()
+                # Repeat the hash enough to fill model_dim bits, then map to +1/-1.
+                buf = bytearray()
+                while len(buf) * 8 < model_dim:
+                    buf.extend(h)
+                bits = [(buf[i // 8] >> (7 - (i % 8))) & 1 for i in range(model_dim)]
+                arr = np.array([1.0 if b else -1.0 for b in bits])
+                out.append(arr)
+            return out
 
     import sys
 
-    fake_mod = type("M", (), {"SentenceTransformer": FakeST})
-    monkeypatch.setitem(sys.modules, "sentence_transformers", fake_mod)
+    fake_mod = type("M", (), {"TextEmbedding": FakeTE})
+    monkeypatch.setitem(sys.modules, "fastembed", fake_mod)
 
 
 def test_deterministic_embed_truncate_path(monkeypatch):
@@ -95,7 +100,7 @@ def test_deterministic_embed_truncate_when_model_larger(monkeypatch):
 
 
 def _install_batched_fake_st(monkeypatch, model_dim: int = 384):
-    """Fake SentenceTransformer that handles N texts in one encode() call.
+    """Fake TextEmbedding that handles N texts in one embed() call.
 
     Each text maps to a deterministic vector (same shape across calls) so the
     batch result equals per-item results.
@@ -109,21 +114,24 @@ def _install_batched_fake_st(monkeypatch, model_dim: int = 384):
         bits = [(buf[i // 8] >> (7 - (i % 8))) & 1 for i in range(model_dim)]
         return np.array([1.0 if b else -1.0 for b in bits])
 
-    class FakeST:
-        def __init__(self, *a, **kw):
-            self.encode_calls = 0
+    class FakeTE:
+        encode_calls = 0
+        last_batch = []
 
-        def encode(self, texts, **kw):
+        def __init__(self, *a, **kw):
+            pass
+
+        def embed(self, texts, **kw):
             # Record how many texts we got in a single call.
-            FakeST.last_batch = list(texts)
-            FakeST.encode_calls = getattr(FakeST, "encode_calls", 0) + 1
-            return np.array([_vec_for(t) for t in texts])
+            FakeTE.last_batch = list(texts)
+            FakeTE.encode_calls = getattr(FakeTE, "encode_calls", 0) + 1
+            return [_vec_for(t) for t in texts]
 
     import sys
 
-    fake_mod = type("M", (), {"SentenceTransformer": FakeST})
-    monkeypatch.setitem(sys.modules, "sentence_transformers", fake_mod)
-    return FakeST
+    fake_mod = type("M", (), {"TextEmbedding": FakeTE})
+    monkeypatch.setitem(sys.modules, "fastembed", fake_mod)
+    return FakeTE
 
 
 def test_embed_many_returns_one_blob_per_input(monkeypatch):

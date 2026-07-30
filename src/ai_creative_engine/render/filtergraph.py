@@ -90,11 +90,19 @@ class FilterGraphBuilder:
         # zoompan's zoom expr is evaluated per output frame; 'on' is the output
         # frame index (0-based) for THIS zoompan instance.
         zoom = self._zoom_expr(win)
-        # zoompan outputs at s=WxH; panning coordinates in [0,1].
+        
+        # Panning equations targeting saliency center with drift (Phase 2)
+        dx = win.pan_x_end - win.pan_x_start
+        dy = win.pan_y_end - win.pan_y_start
+        
+        frames_denom = max(1, frames)
+        step_x = dx / frames_denom
+        step_y = dy / frames_denom
+        
         zp = (
             f"zoompan=z='{zoom}':"
-            f"x='iw*({win.pan_x_start:.6f}+(iw-ow)*0)':"
-            f"y='ih*({win.pan_y_start:.6f}+(ih-oh)*0)':"
+            f"x='max(0, min(iw - iw/z, iw*({win.pan_x_start:.6f}+on*{step_x:.8f}) - iw/(2*z)))':"
+            f"y='max(0, min(ih - ih/z, ih*({win.pan_y_start:.6f}+on*{step_y:.8f}) - ih/(2*z)))':"
             f"d={frames}:s={self._dims_target()}:fps={fps_val:.1f}"
         )
         chain = (

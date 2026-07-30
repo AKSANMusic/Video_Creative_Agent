@@ -19,6 +19,7 @@ from typing import Optional
 
 from ..audio.audio_map import AudioMap
 from ..cache import MetadataCache
+from ..config import get_settings, Settings
 from ..errors import CreativeEngineError
 from ..models import ImageMetadata
 from .cache import TimelineCache, compute_timeline_key
@@ -37,10 +38,12 @@ class NarrativePipeline:
         image_cache: MetadataCache,
         timeline_cache: TimelineCache,
         sequencer: Optional[NarrativeSequencer] = None,
+        settings: Optional[Settings] = None,
     ) -> None:
         self.image_cache = image_cache
         self.timeline_cache = timeline_cache
         self.sequencer = sequencer or NarrativeSequencer()
+        self.settings = settings or get_settings()
 
     # --- public API ----------------------------------------------------------
 
@@ -65,6 +68,13 @@ class NarrativePipeline:
             section_overrides=[
                 s.continuity_weight_override for s in sorted(audio_map.sections, key=lambda x: x.index)
             ],
+            director_enabled=self.settings.director_enabled,
+            pacing_reactivity=self.settings.pacing_reactivity,
+            narrative_arc_enabled=self.settings.narrative_arc_enabled,
+            saliency_camera_enabled=self.settings.saliency_camera_enabled,
+            color_grading_enabled=self.settings.color_grading_enabled,
+            jlcut_enabled=self.settings.jlcut_enabled,
+            jlcut_max_ms=self.settings.jlcut_max_ms,
         )
 
         if self.timeline_cache.exists(key):
@@ -75,6 +85,13 @@ class NarrativePipeline:
             log.warning("Timeline cache miss after reported hit; rebuilding.")
 
         timeline = self.sequencer.sequence(images, audio_map)
+
+        # Apply Cinematic Director post-sequencing pass (Phase 2)
+        if self.settings.director_enabled:
+            from .director import CinematicDirector
+            director = CinematicDirector(self.settings)
+            timeline = director.direct(timeline, audio_map, images)
+
         self.timeline_cache.upsert(key, timeline)
         log.info(
             "Sequenced timeline: %d entries over %.2fs (cache key=%s)",

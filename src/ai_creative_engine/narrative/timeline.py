@@ -47,6 +47,39 @@ class TimelineEntry(BaseModel):
     end: float = Field(..., gt=0.0, description="Entry end time (seconds).")
     transition: Transition = Field(default_factory=Transition)
 
+    # --- Cinematic Director (Phase 2) ---
+    audio_offset_ms: float = Field(
+        default=0.0,
+        description="Audio offset in milliseconds for J-cuts (<0) or L-cuts (>0).",
+    )
+    image_role: str = Field(
+        default="b_roll",
+        description="Narrative role: 'a_roll' or 'b_roll'.",
+    )
+    narrative_act: int = Field(
+        default=1,
+        ge=1,
+        le=3,
+        description="Narrative act (1, 2, or 3).",
+    )
+    zoom_target_x: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="X coordinate of zoom target focus.",
+    )
+    zoom_target_y: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Y coordinate of zoom target focus.",
+    )
+    zoom_intensity: float = Field(
+        default=1.08,
+        gt=0.0,
+        description="Intensity/magnitude of zoompan effect.",
+    )
+
     @field_validator("image_id")
     @classmethod
     def _image_id_hex(cls, v: str) -> str:

@@ -125,6 +125,39 @@ class Settings(BaseSettings):
         description="Beat grid to lock cuts to: 'downbeats' or 'beats'.",
     )
 
+    # --- Cinematic Director (Phase 2) ---
+    director_enabled: bool = Field(
+        default=True,
+        description="Enable or disable the Cinematic Director post-sequencing pass.",
+    )
+    pacing_reactivity: float = Field(
+        default=0.3,
+        ge=0.0,
+        le=1.0,
+        description="Coefficient controlling pacing reactivity (alpha) to audio energy delta.",
+    )
+    narrative_arc_enabled: bool = Field(
+        default=True,
+        description="Enable or disable 3-act narrative arc image roles.",
+    )
+    saliency_camera_enabled: bool = Field(
+        default=True,
+        description="Enable or disable saliency-driven Ken Burns pan/zoom.",
+    )
+    color_grading_enabled: bool = Field(
+        default=False,
+        description="Enable or disable per-shot color grading.",
+    )
+    jlcut_enabled: bool = Field(
+        default=False,
+        description="Enable or disable J-cut/L-cut audio offsets.",
+    )
+    jlcut_max_ms: float = Field(
+        default=400.0,
+        ge=0.0,
+        description="Max duration offset in milliseconds for J/L cuts.",
+    )
+
     # --- Render (Stage 4) ---
     video_codec: str = Field(
         default="libx264",

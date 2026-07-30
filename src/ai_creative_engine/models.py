@@ -19,8 +19,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 EMBEDDING_BYTES = 64
 EMBEDDING_HEX_LEN = EMBEDDING_BYTES * 2  # 128
 
-# Hard ceiling so a single payload never silently exceeds the 0.5 KB budget.
-PAYLOAD_MAX_BYTES = 512
+# Hard ceiling so a single payload never silently exceeds the 0.75 KB budget.
+PAYLOAD_MAX_BYTES = 768
 
 
 class ImageMetadata(BaseModel):
@@ -68,6 +68,56 @@ class ImageMetadata(BaseModel):
     color_histogram: list[float] = Field(
         default_factory=list,
         description="Normalized 16-bin color histogram extracted from the image.",
+    )
+
+    # --- Cinematic Director (Phase 2) ---
+    image_role: str = Field(
+        default="b_roll",
+        description="Narrative role: 'a_roll' (subject/action) or 'b_roll' (ambient/atmosphere).",
+    )
+    dominant_colors: list[str] = Field(
+        default_factory=list,
+        description="Top dominant hex colors.",
+    )
+    mean_luminance: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Mean luminance/brightness.",
+    )
+    mean_saturation: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Mean saturation/intensity.",
+    )
+    color_temperature: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Color temperature (warm vs cool).",
+    )
+    saliency_center_x: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Normalized X coordinate of saliency center.",
+    )
+    saliency_center_y: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Normalized Y coordinate of saliency center.",
+    )
+    edge_complexity: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Canny edge complexity score.",
+    )
+    subject_quadrant: str = Field(
+        default="center",
+        description="Focal point quadrant ('center', 'left', 'right', etc.).",
     )
 
     @field_validator("image_id")

@@ -106,7 +106,9 @@ class ExtractionPipeline:
         """
         stats = PipelineStats(total=len(files))
 
-        # True one-pass run: vision -> embed -> cache (per image)
+        # Pass 1: Filter out cache hits and run vision extraction on the rest
+        pending_files = []
+
         for idx, image_path in enumerate(files, start=1):
             if progress_callback is not None:
                 try:
@@ -129,6 +131,7 @@ class ExtractionPipeline:
                 width, height, exif, color_hist = self._read_image_meta(image_path)
                 florence_res = self.florence.extract(image_path)
                 llava_res = self.llava.extract(image_path)
+
                 embed_text = " ".join(
                     part for part in (
                         florence_res.caption,
@@ -137,9 +140,50 @@ class ExtractionPipeline:
                     ) if part
                 )
 
-                # Embed immediately
-                emb_bytes = self.embedder.embed(embed_text)
+                pending_files.append((image_path, image_id, width, height, exif, color_hist, florence_res, llava_res, embed_text))
+
+                if self.request_delay_s > 0 and idx < len(files):
+                    time.sleep(self.request_delay_s)
+
+            except Exception as exc:  # noqa: BLE001 - fail-soft by design
+                stats.failed += 1
+                stats.failed_files.append(image_path.name)
+                log.error("Failed vision extraction for %s: %s", image_path.name, exc)
+                log.info(
+                    "[%d/%d] %s -> new=%d cached=%d failed=%d",
+                    idx, stats.total, image_path.name, stats.new, stats.cached, stats.failed,
+                )
+
+        if not pending_files:
+            return stats
+
+        # Pass 2: Batch embed all pending texts in one go
+        embed_texts = [item[8] for item in pending_files]
+        try:
+            embeddings = self.embedder.embed_many(embed_texts)
+        except Exception as exc:
+            # Embedder failed -> fail all pending files
+            for image_path, _, _, _, _, _, _, _, _ in pending_files:
+                stats.failed += 1
+                stats.failed_files.append(image_path.name)
+                log.error("Failed to embed batch due to embedder error: %s (failed file: %s)", exc, image_path.name)
+            return stats
+
+        # Save to cache with local visual composition features
+        from .vision.features import VisualFeatureExtractor
+        extractor = VisualFeatureExtractor()
+
+        for idx, (image_path, image_id, width, height, exif, color_hist, florence_res, llava_res, _) in enumerate(pending_files):
+            try:
+                emb_bytes = embeddings[idx]
                 embedding_hex = embedding_to_hex(emb_bytes)
+
+                features = extractor.extract(image_path, metadata_so_far={
+                    "florence_caption": florence_res.caption,
+                    "bounding_boxes": florence_res.bounding_boxes,
+                    "llava_tension": llava_res.tension,
+                    "llava_symbolism": llava_res.symbolism,
+                })
 
                 meta = ImageMetadata(
                     image_id=image_id,
@@ -155,29 +199,16 @@ class ExtractionPipeline:
                     llava_tension=llava_res.tension,
                     llava_symbolism=llava_res.symbolism,
                     embedding_hex=embedding_hex,
+                    **features
                 )
 
-                # Save immediately
                 self.cache.upsert(meta)
                 stats.new += 1
                 log.info("Saved to cache: %s (id=%s)", image_path.name, image_id[:8])
-
-                log.info(
-                    "[%d/%d] %s -> new=%d cached=%d failed=%d",
-                    idx, stats.total, image_path.name, stats.new, stats.cached, stats.failed,
-                )
-
-                if self.request_delay_s > 0 and idx < len(files):
-                    time.sleep(self.request_delay_s)
-                    
-            except Exception as exc:  # noqa: BLE001 - fail-soft by design
+            except Exception as exc:
                 stats.failed += 1
                 stats.failed_files.append(image_path.name)
-                log.error("Failed to process %s: %s", image_path.name, exc)
-                log.info(
-                    "[%d/%d] %s -> new=%d cached=%d failed=%d",
-                    idx, stats.total, image_path.name, stats.new, stats.cached, stats.failed,
-                )
+                log.error("Failed caching/feature extraction for %s: %s", image_path.name, exc)
 
         return stats
 
@@ -212,6 +243,16 @@ class ExtractionPipeline:
         emb_bytes = self.embedder.embed(embed_text)
         embedding_hex = embedding_to_hex(emb_bytes)
 
+        # Local Visual Composition & Directing features (Phase 2)
+        from .vision.features import VisualFeatureExtractor
+        extractor = VisualFeatureExtractor()
+        features = extractor.extract(image_path, metadata_so_far={
+            "florence_caption": florence_res.caption,
+            "bounding_boxes": florence_res.bounding_boxes,
+            "llava_tension": llava_res.tension,
+            "llava_symbolism": llava_res.symbolism,
+        })
+
         meta = ImageMetadata(
             image_id=image_id,
             file_path=str(image_path),
@@ -226,6 +267,7 @@ class ExtractionPipeline:
             llava_tension=llava_res.tension,
             llava_symbolism=llava_res.symbolism,
             embedding_hex=embedding_hex,
+            **features
         )
 
         self.cache.upsert(meta)
