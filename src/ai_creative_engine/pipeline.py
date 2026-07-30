@@ -294,7 +294,7 @@ class ExtractionPipeline:
                     if raw_exif:
                         # Keep it tiny: only a few selected tags.
                         exif_dict = {
-                            int(k): str(v)
+                            str(k): str(v)
                             for k, v in raw_exif.items()
                             if v is not None
                         }
