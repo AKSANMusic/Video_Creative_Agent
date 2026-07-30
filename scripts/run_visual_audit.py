@@ -30,10 +30,16 @@ def run_cmd(cmd: list[str], step_name: str):
 
 def main():
     parser = argparse.ArgumentParser(description="Run the Phase 3 Visual Audit")
-    parser.add_argument("--images", required=True, help="Path to directory containing test images (mixed media)")
-    parser.add_argument("--audio", required=True, help="Path to test audio track (ideally ~30s)")
-    parser.add_argument("--out", default="visual_audit_render.mp4", help="Output MP4 path")
-    parser.add_argument("--db", default="audit_cache.db", help="Temporary database for this audit")
+    
+    # Defaulting to the existing Phase 1 workspace data
+    default_images = Path("workspace_runs/input_images")
+    default_audio = Path(r"C:\Users\KEYHANI\AppData\Local\Temp\gradio\867bf22489400f05926afac18a81a6ab5f1314f0ec1324360973316f8fbae945\Nocturnal Echoes.wav")
+    default_db = Path("creative_engine.db")
+    
+    parser.add_argument("--images", default=str(default_images), help="Path to directory containing test images (mixed media)")
+    parser.add_argument("--audio", default=str(default_audio), help="Path to test audio track")
+    parser.add_argument("--out", default="audit_render.mp4", help="Output MP4 path")
+    parser.add_argument("--db", default=str(default_db), help="Database for this audit")
     
     args = parser.parse_args()
     
