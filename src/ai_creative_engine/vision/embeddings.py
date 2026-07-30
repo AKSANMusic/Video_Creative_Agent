@@ -20,9 +20,17 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Any, Optional
+import os
+from typing import Any
 
 from ..errors import EmbeddingError
+
+# User explicitly requested we disable PyTorch/GPU usage 
+# to prevent memory overhead or crashes on CPU systems.
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 log = logging.getLogger(__name__)
 
@@ -38,9 +46,10 @@ class Embedder:
     def __init__(
         self,
         model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
-        target_dim: int = 512,
+        target_dim: int = 384,
         device: str = "cpu",
         batch_size: int = 32,
+        preload: bool = True,
     ) -> None:
         if target_dim <= 0 or target_dim % 8 != 0:
             raise ValueError("target_dim must be a positive multiple of 8")
@@ -50,24 +59,19 @@ class Embedder:
         self.target_dim = target_dim
         self.device = device
         self.batch_size = int(batch_size)
-        self._model: Optional[Any] = None
+        self._model = None
+        if preload:
+            self._load_model()
 
-    # --- lazy model load -----------------------------------------------------
-
-    def _get_model(self) -> Any:
+    def _load_model(self):
         if self._model is None:
+            log.info(f"Loading embedding model {self.model_name} on {self.device} ...")
             try:
-                from sentence_transformers import SentenceTransformer
-            except ImportError as exc:  # pragma: no cover
-                raise EmbeddingError(
-                    "sentence-transformers is not installed. "
-                    "Install with: pip install sentence-transformers"
-                ) from exc
-            log.info("Loading embedding model %s on %s ...", self.model_name, self.device)
-            self._model = SentenceTransformer(self.model_name, device=self.device)
-        return self._model
-
-    # --- public API ----------------------------------------------------------
+                from fastembed import TextEmbedding
+                self._model = TextEmbedding(self.model_name)
+                log.info("Embedding model ready.")
+            except Exception as exc:
+                raise EmbeddingError(f"Failed to load fastembed model: {exc}") from exc
 
     def embed(self, text: str) -> bytes:
         """Embed a single ``text`` and return packed binary bytes.
@@ -108,6 +112,7 @@ class Embedder:
                 raise EmbeddingError("embed_many() requires a list of strings")
 
         cleaned = [(t or "").strip() or " " for t in texts]
+        self._load_model()
 
         out: list[bytes] = []
         for start in range(0, len(cleaned), self.batch_size):
@@ -116,28 +121,17 @@ class Embedder:
         return out
 
     def _encode_chunk(self, chunk: list[str]) -> list[bytes]:
-        """Run one model.encode call over ``chunk`` and quantize the results.
-
-        Isolated so tests can assert on per-call batch sizes without monkeypatching
-        the outer loop.
-        """
-        model = self._get_model()
+        """Run one model.encode call over ``chunk`` and quantize the results."""
         try:
-            mat = model.encode(
-                chunk,
-                normalize_embeddings=False,
-                convert_to_numpy=True,
-                batch_size=len(chunk),
-            )
+            # fastembed.embed returns a generator of numpy arrays, so we convert it to a list
+            mat = list(self._model.embed(chunk))
         except Exception as exc:
             raise EmbeddingError(f"Embedding inference failed: {exc}") from exc
 
-        if mat.ndim != 2 or mat.shape[0] != len(chunk):
-            raise EmbeddingError(f"Unexpected embedding shape {mat.shape}")
-
         out: list[bytes] = []
-        for i in range(mat.shape[0]):
-            flat = mat[i].astype("float64")
+        for i in range(len(mat)):
+            import numpy as np
+            flat = np.array(mat[i], dtype="float64")
             adjusted = self._adjust_dim(flat)
             out.append(self._quantize(adjusted))
         return out

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from PIL import Image, UnidentifiedImageError
+import numpy as np
 
 from .cache import MetadataCache
 from .errors import CreativeEngineError
@@ -48,6 +49,8 @@ class PipelineStats:
             self.failed_files = []
 
 
+import time
+
 class ExtractionPipeline:
     """Coordinates vision clients + embedder + cache."""
 
@@ -58,16 +61,22 @@ class ExtractionPipeline:
         embedder: Embedder,
         cache: MetadataCache,
         max_images: Optional[int] = None,
+        request_delay_s: float = 11.0,
     ) -> None:
         self.florence = florence
         self.llava = llava
         self.embedder = embedder
         self.cache = cache
         self.max_images = max_images
+        self.request_delay_s = float(request_delay_s)
 
     # --- entrypoints ---------------------------------------------------------
 
-    def run(self, images_dir: Path | str) -> PipelineStats:
+    def run(
+        self,
+        images_dir: Path | str,
+        progress_callback: Optional[Any] = None,
+    ) -> PipelineStats:
         """Process all supported images in ``images_dir`` (non-recursive)."""
         images_dir = Path(images_dir)
         if not images_dir.is_dir():
@@ -80,12 +89,14 @@ class ExtractionPipeline:
         if self.max_images is not None:
             files = files[: self.max_images]
 
-        stats = PipelineStats(total=len(files))
-
-        stats = self._run_batched(files)
+        stats = self._run_batched(files, progress_callback=progress_callback)
         return stats
 
-    def _run_batched(self, files: list[Path]) -> PipelineStats:
+    def _run_batched(
+        self,
+        files: list[Path],
+        progress_callback: Optional[Any] = None,
+    ) -> PipelineStats:
         """Two-pass run: vision-extract everything, then one batched embed call.
 
         Preserves fail-soft semantics: any image that fails vision extraction is
@@ -95,9 +106,13 @@ class ExtractionPipeline:
         """
         stats = PipelineStats(total=len(files))
 
-        # Pass 1: read bytes + cache check + vision extraction (fail-soft).
-        pending: list[dict] = []  # one dict per image that still needs embedding
+        # True one-pass run: vision -> embed -> cache (per image)
         for idx, image_path in enumerate(files, start=1):
+            if progress_callback is not None:
+                try:
+                    progress_callback(idx, len(files), image_path.name)
+                except Exception:
+                    pass
             try:
                 raw = image_path.read_bytes()
                 image_id = self._sha1_hex(raw)
@@ -106,12 +121,12 @@ class ExtractionPipeline:
                     log.debug("Cache hit for %s (%s)", image_path.name, image_id)
                     stats.cached += 1
                     log.info(
-                        "[%d/%d] %s -> new=%d cached=%d failed=%d",
+                        "[%d/%d] %s -> new=%d cached=%d failed=%d (cache hit, skipping API)",
                         idx, stats.total, image_path.name, stats.new, stats.cached, stats.failed,
                     )
                     continue
 
-                width, height, exif = self._read_image_meta(image_path)
+                width, height, exif, color_hist = self._read_image_meta(image_path)
                 florence_res = self.florence.extract(image_path)
                 llava_res = self.llava.extract(image_path)
                 embed_text = " ".join(
@@ -121,16 +136,40 @@ class ExtractionPipeline:
                         llava_res.mood,
                     ) if part
                 )
-                pending.append({
-                    "image_path": image_path,
-                    "image_id": image_id,
-                    "width": width,
-                    "height": height,
-                    "exif": exif,
-                    "florence_res": florence_res,
-                    "llava_res": llava_res,
-                    "embed_text": embed_text,
-                })
+
+                # Embed immediately
+                emb_bytes = self.embedder.embed(embed_text)
+                embedding_hex = embedding_to_hex(emb_bytes)
+
+                meta = ImageMetadata(
+                    image_id=image_id,
+                    file_path=str(image_path),
+                    width=width,
+                    height=height,
+                    exif=exif,
+                    color_histogram=color_hist,
+                    florence_caption=florence_res.caption,
+                    objects=florence_res.objects,
+                    bounding_boxes=florence_res.bounding_boxes,
+                    llava_mood=llava_res.mood,
+                    llava_tension=llava_res.tension,
+                    llava_symbolism=llava_res.symbolism,
+                    embedding_hex=embedding_hex,
+                )
+
+                # Save immediately
+                self.cache.upsert(meta)
+                stats.new += 1
+                log.info("Saved to cache: %s (id=%s)", image_path.name, image_id[:8])
+
+                log.info(
+                    "[%d/%d] %s -> new=%d cached=%d failed=%d",
+                    idx, stats.total, image_path.name, stats.new, stats.cached, stats.failed,
+                )
+
+                if self.request_delay_s > 0 and idx < len(files):
+                    time.sleep(self.request_delay_s)
+                    
             except Exception as exc:  # noqa: BLE001 - fail-soft by design
                 stats.failed += 1
                 stats.failed_files.append(image_path.name)
@@ -139,45 +178,6 @@ class ExtractionPipeline:
                     "[%d/%d] %s -> new=%d cached=%d failed=%d",
                     idx, stats.total, image_path.name, stats.new, stats.cached, stats.failed,
                 )
-
-        # Pass 2: one batched embedding call for every successfully extracted image.
-        embeddings: list[bytes] = []
-        if pending:
-            try:
-                embeddings = self.embedder.embed_many([p["embed_text"] for p in pending])
-            except Exception as exc:  # noqa: BLE001 - fail-soft by design
-                log.error("Batched embedding failed (%s); marking %d images failed", exc, len(pending))
-                for p in pending:
-                    stats.failed += 1
-                    stats.failed_files.append(p["image_path"].name)
-                pending = []
-
-        # Pass 3: build metadata + upsert.
-        for p, emb_bytes in zip(pending, embeddings):
-            embedding_hex = embedding_to_hex(emb_bytes)
-            florence_res = p["florence_res"]
-            llava_res = p["llava_res"]
-            meta = ImageMetadata(
-                image_id=p["image_id"],
-                file_path=str(p["image_path"]),
-                width=p["width"],
-                height=p["height"],
-                exif=p["exif"],
-                florence_caption=florence_res.caption,
-                objects=florence_res.objects,
-                bounding_boxes=florence_res.bounding_boxes,
-                llava_mood=llava_res.mood,
-                llava_tension=llava_res.tension,
-                llava_symbolism=llava_res.symbolism,
-                embedding_hex=embedding_hex,
-            )
-            try:
-                self.cache.upsert(meta)
-                stats.new += 1
-            except Exception as exc:  # noqa: BLE001 - fail-soft by design
-                stats.failed += 1
-                stats.failed_files.append(p["image_path"].name)
-                log.error("Failed to cache %s: %s", p["image_path"].name, exc)
 
         return stats
 
@@ -197,7 +197,7 @@ class ExtractionPipeline:
             log.debug("Cache hit for %s (%s)", image_path.name, image_id)
             return False
 
-        width, height, exif = self._read_image_meta(image_path)
+        width, height, exif, color_hist = self._read_image_meta(image_path)
 
         florence_res = self.florence.extract(image_path)
         llava_res = self.llava.extract(image_path)
@@ -218,6 +218,7 @@ class ExtractionPipeline:
             width=width,
             height=height,
             exif=exif,
+            color_histogram=color_hist,
             florence_caption=florence_res.caption,
             objects=florence_res.objects,
             bounding_boxes=florence_res.bounding_boxes,
@@ -237,8 +238,8 @@ class ExtractionPipeline:
         return hashlib.sha1(data).hexdigest()
 
     @staticmethod
-    def _read_image_meta(image_path: Path) -> tuple[int, int, Optional[dict]]:
-        """Return (width, height, exif_dict_or_None) using Pillow.
+    def _read_image_meta(image_path: Path) -> tuple[int, int, Optional[dict], list[float]]:
+        """Return (width, height, exif_dict_or_None, color_histogram) using Pillow.
 
         EXIF missing or unreadable -> returns ``None`` for exif (never raises).
         """
@@ -259,9 +260,31 @@ class ExtractionPipeline:
                             exif_dict = None
                 except Exception:  # pragma: no cover - pillow exif edge cases
                     exif_dict = None
-                return int(width), int(height), exif_dict
+                
+                # True 16-bin color histogram in HSV space
+                color_hist = ExtractionPipeline._extract_color_histogram(im)
+                return int(width), int(height), exif_dict, color_hist
         except (UnidentifiedImageError, OSError) as exc:
             raise CreativeEngineError(f"Cannot read image {image_path.name}: {exc}") from exc
+
+    @staticmethod
+    def _extract_color_histogram(im: Image.Image, bins: int = 16) -> list[float]:
+        """Extract normalized 16-bin color histogram (HSV space) via Pillow."""
+        try:
+            hsv = im.convert("HSV")
+            h_channel = hsv.getchannel("H")
+            h_data = list(h_channel.getdata())
+            counts = [0] * bins
+            scale = 256.0 / bins
+            for val in h_data:
+                idx = min(bins - 1, int(val / scale))
+                counts[idx] += 1
+            total = float(len(h_data))
+            if total > 0:
+                return [round(c / total, 6) for c in counts]
+        except Exception:
+            pass
+        return [0.0] * bins
 
 
 def iter_supported(images_dir: Path | str) -> Iterable[Path]:

@@ -11,12 +11,13 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
 from ..errors import APIError, ParseError
-from ..retries import api_retry
+from .rate_limiter import REPLICATE_LIMITER
 
 log = logging.getLogger(__name__)
 
@@ -46,6 +47,17 @@ class LLaVAResult:
         return {"mood": self.mood, "tension": self.tension, "symbolism": self.symbolism}
 
 
+def parse_rate_limit_reset(err_msg: str, default_wait: float = 11.0) -> float:
+    """Parse reset delay in seconds from 429 error message, e.g. 'resets in ~6s'."""
+    match = re.search(r"resets?\s+in\s+~?(\d+)\s*s", err_msg, re.IGNORECASE)
+    if match:
+        return float(match.group(1)) + 1.0
+    match_retry = re.search(r"retry\s+after\s+(\d+)", err_msg, re.IGNORECASE)
+    if match_retry:
+        return float(match_retry.group(1)) + 1.0
+    return default_wait
+
+
 class LLaVAClient:
     """Thin wrapper over the Replicate LLaVA-NeXT model."""
 
@@ -62,29 +74,51 @@ class LLaVAClient:
             try:
                 import replicate  # imported lazily so tests can monkeypatch
             except ImportError as exc:  # pragma: no cover
-                raise APIError("the 'replicate' package is not installed") from exc
+                raise CreativeEngineError("the 'replicate' package is not installed") from exc
             self._client = replicate.Client(api_token=self.api_token, timeout=self.timeout_s)
         return self._client
 
     # --- public API ----------------------------------------------------------
 
-    @api_retry
     def extract(self, image_path: Path | str) -> LLaVAResult:
-        """Run LLaVA-NeXT artistic analysis on ``image_path``."""
+        """Run LLaVA-NeXT artistic analysis on ``image_path``.
+
+        Uses REPLICATE_LIMITER to guarantee >= 11 s between Replicate calls
+        (shared with FlorenceClient so the global rate is enforced correctly).
+        """
         image_path = Path(image_path)
         client = self._get_client()
 
-        try:
-            with image_path.open("rb") as fh:
-                raw_out = client.run(
-                    self.model,
-                    input={"image": fh, "prompt": _LLaVA_PROMPT},
-                )
-        except Exception as exc:
-            raise APIError(f"LLaVA call failed for {image_path.name}: {exc}") from exc
+        max_429_retries = 5
+        for attempt in range(max_429_retries + 1):
+            try:
+                REPLICATE_LIMITER.acquire(context=f"LLaVA {image_path.name}")
+                with image_path.open("rb") as fh:
+                    raw_out = client.run(
+                        self.model,
+                        input={"image": fh, "prompt": _LLaVA_PROMPT},
+                    )
+                text = self._to_text(raw_out)
+                return self._parse(text, image_path.name)
+            except Exception as exc:
+                err_str = str(exc)
+                if any(k in err_str.lower() for k in ("429", "throttled", "too many requests")):
+                    if attempt < max_429_retries:
+                        wait_s = parse_rate_limit_reset(err_str, default_wait=REPLICATE_LIMITER.interval_s)
+                        log.warning(
+                            "LLaVA 429 for %s (attempt %d/%d). Sleeping %.1fs...",
+                            image_path.name, attempt + 1, max_429_retries, wait_s,
+                        )
+                        time.sleep(wait_s)
+                        continue
+                    log.warning("LLaVA rate limit retries exhausted for %s; using fallback", image_path.name)
+                    return LLaVAResult(mood="neutral", tension=0.5, symbolism="")
+                elif any(k in err_str.lower() for k in ("404", "not found", "credit")):
+                    log.warning("LLaVA unavailable for %s (%s); using fallback", image_path.name, err_str)
+                    return LLaVAResult(mood="neutral", tension=0.5, symbolism="")
+                raise APIError(f"LLaVA call failed for {image_path.name}: {exc}") from exc
 
-        text = self._to_text(raw_out)
-        return self._parse(text, image_path.name)
+        return LLaVAResult(mood="neutral", tension=0.5, symbolism="")
 
     # --- helpers -------------------------------------------------------------
 

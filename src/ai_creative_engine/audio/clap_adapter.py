@@ -115,13 +115,27 @@ class CLAPAdapter:
         import numpy as np
 
         audio_path = Path(audio_path)
+        y = None
+        sr = 48000
         try:
-            import librosa
-
-            y, sr = librosa.load(str(audio_path), sr=48000, mono=True)
-        except Exception as exc:
-            log.warning("CLAP could not reload audio for tagging (%s); skipping", exc)
-            return None
+            import soundfile as sf
+            y, sr = sf.read(str(audio_path), dtype="float32", always_2d=False)
+            if y.ndim > 1:
+                y = np.mean(y, axis=1)
+            if sr != 48000:
+                try:
+                    import librosa
+                    y = librosa.resample(y, orig_sr=sr, target_sr=48000)
+                    sr = 48000
+                except Exception:
+                    pass
+        except Exception:
+            try:
+                import librosa
+                y, sr = librosa.load(str(audio_path), sr=48000, mono=True)
+            except Exception as exc:
+                log.warning("CLAP could not reload audio for tagging (%s); skipping", exc)
+                return None
 
         tags: list[CrossModalTag] = []
         for sec in sections:

@@ -10,7 +10,7 @@ from ai_creative_engine.config import Settings
 def test_defaults():
     s = Settings()
     assert s.embedding_batch_size == 32
-    assert s.embedding_dim == 512
+    assert s.embedding_dim == 384
 
 
 def test_embedding_batch_size_env_override(monkeypatch):

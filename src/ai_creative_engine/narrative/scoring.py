@@ -105,12 +105,33 @@ def color_continuity_from_embeddings(a: bytes, b: bytes, bins: int = 16) -> floa
     return 1.0 - jsd(_bytes_to_histogram(a, bins), _bytes_to_histogram(b, bins))
 
 
+def color_continuity(
+    a_hist: Optional[Sequence[float]] = None,
+    b_hist: Optional[Sequence[float]] = None,
+    a_bytes: Optional[bytes] = None,
+    b_bytes: Optional[bytes] = None,
+    bins: int = 16,
+) -> float:
+    """Return [0,1] color continuity (1 = identical).
+
+    If true color histograms are provided, computes 1 - JSD directly.
+    Otherwise falls back to embedding pseudo-histograms.
+    """
+    if a_hist and b_hist and len(a_hist) == len(b_hist) and len(a_hist) > 0 and sum(a_hist) > 0 and sum(b_hist) > 0:
+        return 1.0 - jsd(a_hist, b_hist)
+    if a_bytes and b_bytes:
+        return color_continuity_from_embeddings(a_bytes, b_bytes, bins=bins)
+    return 0.0
+
+
 def transition_cost(
     prev_bytes: bytes,
     cur_bytes: bytes,
     continuity_weight: float = 0.5,
     continuity_weight_override: Optional[float] = None,
     bins: int = 16,
+    prev_hist: Optional[Sequence[float]] = None,
+    cur_hist: Optional[Sequence[float]] = None,
 ) -> float:
     """Combined cost of placing ``cur`` right after ``prev``.
 
@@ -122,7 +143,7 @@ def transition_cost(
     cw = continuity_weight_override if continuity_weight_override is not None else continuity_weight
     cw = float(min(max(cw, 0.0), 1.0))
     sim = embedding_similarity(prev_bytes, cur_bytes)
-    cont = color_continuity_from_embeddings(prev_bytes, cur_bytes, bins=bins)
+    cont = color_continuity(prev_hist, cur_hist, a_bytes=prev_bytes, b_bytes=cur_bytes, bins=bins)
     blended = (1.0 - cw) * sim + cw * cont
     # Cost = 1 - blended_similarity, in [0,1].
     return 1.0 - blended
@@ -134,6 +155,7 @@ __all__ = [
     "hamming_distance_bytes",
     "embedding_similarity",
     "jsd",
+    "color_continuity",
     "color_continuity_from_embeddings",
     "transition_cost",
 ]

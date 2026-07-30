@@ -105,16 +105,28 @@ class AudioAnalyzer:
 
     def _load(self, audio_path: Path) -> tuple[Any, int]:
         try:
-            import librosa
-        except ImportError as exc:  # pragma: no cover
-            raise AudioAnalysisError(
-                "librosa is not installed. Install with: pip install librosa soundfile"
-            ) from exc
+            import soundfile as sf
+            y, sr = sf.read(str(audio_path), dtype="float32", always_2d=False)
+            if y.ndim > 1:
+                import numpy as np
+                y = np.mean(y, axis=1)
+            if self.sample_rate and sr != self.sample_rate:
+                try:
+                    import librosa
+                    y = librosa.resample(y, orig_sr=sr, target_sr=self.sample_rate)
+                    sr = self.sample_rate
+                except Exception:
+                    pass
+            return y, int(sr)
+        except Exception:
+            pass
+
         try:
+            import librosa
             y, sr = librosa.load(str(audio_path), sr=self.sample_rate, mono=True)
+            return y, int(sr)
         except Exception as exc:
             raise AudioAnalysisError(f"Failed to load audio {audio_path.name}: {exc}") from exc
-        return y, int(sr)
 
     def _beat_grid(self, y: Any, sr: int) -> tuple[float, list[float], list[float]]:
         import librosa
@@ -124,17 +136,17 @@ class AudioAnalyzer:
             tempo, beat_frames = librosa.beat.beat_track(
                 y=y, sr=sr, hop_length=self.hop_length
             )
+            bpm = float(np.ravel(tempo)[0]) if np.size(tempo) else 120.0
+            if bpm <= 0.0:
+                bpm = 120.0
+            beat_times = librosa.frames_to_time(beat_frames, sr=sr, hop_length=self.hop_length)
+            beats = [float(t) for t in np.ravel(beat_times)]
         except Exception as exc:
-            log.warning("beat_track failed (%s); defaulting to 120 bpm, no beats", exc)
-            return 120.0, [], []
-
-        # librosa >=0.10 may return an array for tempo; normalize to float.
-        bpm = float(np.ravel(tempo)[0]) if np.size(tempo) else 120.0
-        if bpm <= 0.0:
+            log.warning("beat_track failed (%s); defaulting to 120 bpm fallback grid", exc)
             bpm = 120.0
-
-        beat_times = librosa.frames_to_time(beat_frames, sr=sr, hop_length=self.hop_length)
-        beats = [float(t) for t in np.ravel(beat_times)]
+            duration = float(len(y)) / float(sr) if sr > 0 else 0.0
+            step = 60.0 / bpm
+            beats = [round(float(i * step), 4) for i in range(int(duration / step))]
 
         # Downbeat heuristic: every 4th beat (4/4 assumption). Stable + simple.
         downbeats = beats[::4]

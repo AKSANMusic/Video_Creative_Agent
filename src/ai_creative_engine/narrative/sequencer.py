@@ -67,14 +67,18 @@ class NarrativeSequencer:
         dp_threshold: int = DEFAULT_DP_THRESHOLD,
         continuity_weight: float = 0.5,
         cut_on: str = "downbeats",
+        min_shot_duration: float = 1.5,
     ) -> None:
         if dp_threshold < 2:
             raise ValueError("dp_threshold must be >= 2")
         if cut_on not in ("downbeats", "beats"):
             raise ValueError("cut_on must be 'downbeats' or 'beats'")
+        if min_shot_duration <= 0:
+            raise ValueError("min_shot_duration must be positive")
         self.dp_threshold = int(dp_threshold)
         self.continuity_weight = float(continuity_weight)
         self.cut_on = cut_on
+        self.min_shot_duration = float(min_shot_duration)
 
     # --- public API ----------------------------------------------------------
 
@@ -178,10 +182,25 @@ class NarrativeSequencer:
         """Return the cut-anchor times, always including 0 and duration."""
         grid = audio_map.downbeats if self.cut_on == "downbeats" else audio_map.beats
         grid = sorted(set(float(t) for t in grid))
+        
+        # Enforce minimum shot duration (thin out anchors)
+        if grid:
+            thinned = [grid[0]]
+            for t in grid[1:]:
+                if t - thinned[-1] >= self.min_shot_duration:
+                    thinned.append(t)
+            grid = thinned
+            
         if not grid or grid[0] > 1e-6:
             grid = [0.0] + grid
         if grid[-1] < audio_map.duration - 1e-6:
-            grid = grid + [audio_map.duration]
+            # Force the last anchor if we need to close the track.
+            # But if the previous anchor was too close to duration, replace it?
+            if len(grid) > 1 and audio_map.duration - grid[-1] < self.min_shot_duration / 2:
+                grid[-1] = audio_map.duration
+            else:
+                grid.append(audio_map.duration)
+                
         # Drop any anchors beyond duration (defensive).
         grid = [t for t in grid if t <= audio_map.duration + 1e-6]
         return grid
@@ -215,15 +234,27 @@ class NarrativeSequencer:
         if not sections:
             return {}
         buckets: dict[int, list[ImageMetadata]] = {s.index: [] for s in sections}
+        
+        # Group by mood for semantic clustering
+        from collections import defaultdict
+        mood_groups = defaultdict(list)
         for img in images:
+            mood_groups[img.llava_mood].append(img)
+            
+        # Assign each mood group to the section that best matches its average tension
+        for mood, group in mood_groups.items():
+            avg_tension = sum(img.llava_tension for img in group) / len(group)
+            
             best_idx = sections[0].index
             best_score = -1.0
             for s in sections:
-                sc = scoring.tension_energy_score(img.llava_tension, s.mean_energy)
+                sc = scoring.tension_energy_score(avg_tension, s.mean_energy)
                 if sc > best_score:
                     best_score = sc
                     best_idx = s.index
-            buckets[best_idx].append(img)
+            
+            buckets[best_idx].extend(group)
+            
         # Guarantee every section that will have slots has at least one image.
         # (Empty buckets are handled by _order_section via fallback_pool.)
         return buckets
@@ -384,6 +415,8 @@ class NarrativeSequencer:
             b.embedding_bytes,
             continuity_weight=self.continuity_weight,
             continuity_weight_override=override,
+            prev_hist=getattr(a, "color_histogram", None),
+            cur_hist=getattr(b, "color_histogram", None),
         )
 
     # --- placements -> entries ----------------------------------------------

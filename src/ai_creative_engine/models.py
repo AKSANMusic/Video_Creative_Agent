@@ -58,10 +58,16 @@ class ImageMetadata(BaseModel):
     )
     llava_symbolism: str = Field(default="", description="Free-text symbolism / artistic intent.")
 
-    # --- Embedding (512-dim sign-quantized, 64 bytes) as hex for JSON portability ---
+    # --- Embedding (384/512-dim sign-quantized binary embedding) as hex ---
     embedding_hex: str = Field(
-        default="0" * EMBEDDING_HEX_LEN,
-        description=f"{EMBEDDING_HEX_LEN}-char hex of the 64-byte binary embedding.",
+        default="",
+        description="Hex string of the packed binary embedding.",
+    )
+
+    # --- Color Histogram (Stage 1 visual color proxy) ---
+    color_histogram: list[float] = Field(
+        default_factory=list,
+        description="Normalized 16-bin color histogram extracted from the image.",
     )
 
     @field_validator("image_id")
@@ -76,12 +82,13 @@ class ImageMetadata(BaseModel):
     @field_validator("embedding_hex")
     @classmethod
     def _embedding_hex_well_formed(cls, v: str) -> str:
-        if len(v) != EMBEDDING_HEX_LEN:
-            raise ValueError(
-                f"embedding_hex must be exactly {EMBEDDING_HEX_LEN} hex chars, got {len(v)}"
-            )
+        if v and len(v) % 2 != 0:
+            raise ValueError(f"embedding_hex must have an even length, got {len(v)}")
+        if v and len(v) < 16:
+            raise ValueError(f"embedding_hex is too short ({len(v)} chars)")
         try:
-            bytes.fromhex(v)
+            if v:
+                bytes.fromhex(v)
         except ValueError as exc:
             raise ValueError("embedding_hex contains non-hex characters") from exc
         return v.lower()

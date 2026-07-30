@@ -63,7 +63,7 @@ class FilterGraphBuilder:
             input_idx = i
             input_order.append(win.image_path)
             out_label = f"[v{i}]"
-            chains.append(self._entry_chain(win, input_idx, out_label))
+            chains.append(self._entry_chain(win, input_idx, out_label, fps=plan.fps))
             labels.append(out_label)
 
         # Stitch entries pairwise with xfade (duration=0 for cuts).
@@ -81,9 +81,10 @@ class FilterGraphBuilder:
 
     # --- per-entry chain -----------------------------------------------------
 
-    def _entry_chain(self, win: FrameWindow, input_idx: int, out_label: str) -> str:
+    def _entry_chain(self, win: FrameWindow, input_idx: int, out_label: str, fps: float = 30.0) -> str:
         """loop -> scale -> setsar -> format -> zoompan for one entry."""
         frames = win.frame_count
+        fps_val = fps if fps > 0 else 30.0
         # zoompan needs 'd' (duration in output frames), and a time-based zoom
         # expression. We compute zoom over the normalized in-window frame index.
         # zoompan's zoom expr is evaluated per output frame; 'on' is the output
@@ -94,17 +95,13 @@ class FilterGraphBuilder:
             f"zoompan=z='{zoom}':"
             f"x='iw*({win.pan_x_start:.6f}+(iw-ow)*0)':"
             f"y='ih*({win.pan_y_start:.6f}+(ih-oh)*0)':"
-            f"d={frames}:s={self._dims_target()}:fps={0}"
+            f"d={frames}:s={self._dims_target()}:fps={fps_val:.1f}"
         )
-        # NOTE: we set fps=0 in zoompan (no internal rate change); the loop
-        # already produces the right number of frames at the output fps via the
-        # encoder's -r flag. scale ensures the source fills the canvas; we use
-        # force_original_aspect_ratio+crop for a clean cover fit.
         chain = (
             f"[{input_idx}:v]loop=loop={frames}:size=1:start=0,"
-            f"scale={self._dims_target()}:force_original_aspect_ratio=increase,"
-            f"crop={self._dims_target()},setsar=1,format={self.sample_fmt},{zp},"
-            f"format={self.pixel_fmt}"
+            f"scale={self._dims_target()}:force_original_aspect_ratio=decrease,"
+            f"pad={self._dims_crop()}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format={self.sample_fmt},{zp},"
+            f"format={self.pixel_fmt},settb=1/{int(fps_val)}"
             f"{out_label}"
         )
         return chain
@@ -121,10 +118,12 @@ class FilterGraphBuilder:
         return f"{z0:.6f}+on*{slope:.6f}"
 
     def _dims_target(self) -> str:
-        # Uses the plan's target dimensions; we pass them via the builder by
-        # reading from the entry's RenderPlan indirectly. To keep the chain
-        # builder stateless we encode dims as a builder attribute set at build.
+        """WxH format for scale and zoompan (e.g. '1280x720')."""
         return f"{self._w}x{self._h}" if hasattr(self, "_w") else "1280x720"
+
+    def _dims_crop(self) -> str:
+        """W:H format for the crop filter (e.g. '1280:720')."""
+        return f"{self._w}:{self._h}" if hasattr(self, "_w") else "1280:720"
 
     # --- stitching -----------------------------------------------------------
 
@@ -143,17 +142,20 @@ class FilterGraphBuilder:
 
         chains: list[str] = []
         cur = labels[0]
-        offset_accum = 0.0  # accumulated seconds before the current join
+        stitched_duration = plan.windows[0].frame_count / plan.fps
         for i in range(1, len(labels)):
             win = plan.windows[i]
             trans = win.transition_type
             trans_frames = win.transition_frames
             dur_s = (trans_frames / plan.fps) if trans != "cut" else 0.0
-            # xfade offset = seconds of the left stream that have played before
-            # the transition starts.
-            left_seconds = (plan.windows[i - 1].frame_count / plan.fps)
-            offset_accum += left_seconds
-            offset = max(0.0, offset_accum - dur_s)
+            
+            # The transition begins exactly dur_s before the end of the stitched stream
+            offset = max(0.0, stitched_duration - dur_s)
+            
+            # Add the new clip's duration to the total, but subtract the overlapped portion
+            incoming_dur = plan.windows[i].frame_count / plan.fps
+            stitched_duration = stitched_duration + incoming_dur - dur_s
+            
             out_label = f"[vx{i}]"
             xfade = (
                 f"{cur}{labels[i]}xfade=transition={self._xfade_mode(trans, plan, i)}:"

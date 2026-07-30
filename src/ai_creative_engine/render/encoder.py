@@ -84,16 +84,24 @@ class FFmpegEncoder:
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         argv = self._build_argv(graph, audio_path, output_path)
+        log.info("FFmpeg argv[0] = %s  (exists=%s)", argv[0], Path(argv[0]).exists())
         result = EncodeResult(
             output_path=output_path,
             argv=argv,
             returncode=-1,
         )
         try:
-            returncode, stderr = self._run(argv)
+            returncode, stderr = self._run(argv, filter_complex=graph.filter_complex)
         except FileNotFoundError as exc:
+            log.error("FileNotFoundError during ffmpeg run: %s", exc)
             raise CreativeEngineError(
-                "ffmpeg binary not found on PATH. Install ffmpeg to render."
+                f"FileNotFoundError: {exc}. "
+                f"argv[0]={argv[0]!r}, exists={Path(argv[0]).exists()}"
+            ) from exc
+        except Exception as exc:
+            log.error("Unexpected error during ffmpeg run: %s", exc)
+            raise CreativeEngineError(
+                f"ffmpeg run error: {type(exc).__name__}: {exc}"
             ) from exc
         result.returncode = returncode
         result.stderr_tail = stderr[-4000:]
@@ -114,7 +122,8 @@ class FFmpegEncoder:
         output_path: Path,
     ) -> list[str]:
         """Build the ffmpeg command line. Pure + testable."""
-        argv: list[str] = ["ffmpeg", "-hide_banner", "-loglevel", self.loglevel, "-y"]
+        ffmpeg_bin = r"C:\Users\KEYHANI\.gemini\antigravity\scratch\Video_Creative_Agent\ffmpeg.exe"
+        argv: list[str] = [ffmpeg_bin, "-hide_banner", "-loglevel", self.loglevel, "-y"]
 
         # Image inputs in filtergraph order (each a single still).
         for img in graph.input_order:
@@ -123,8 +132,10 @@ class FFmpegEncoder:
         # Audio input last -> its index is graph.audio_index.
         argv += ["-i", str(audio_path)]
 
+        # NOTE: filter_complex is NOT added here — it is written to a temp
+        # file in _run() and passed via -filter_complex_script to avoid
+        # the Windows 8191-char command-line limit (WinError 206).
         argv += [
-            "-filter_complex", graph.filter_complex,
             "-map", graph.video_output_label,
             "-map", f"{graph.audio_index}:a",
             "-r", f"{self.fps}",
@@ -144,24 +155,59 @@ class FFmpegEncoder:
 
     # --- runner (mockable) ---------------------------------------------------
 
-    def _run(self, argv: list[str]) -> tuple[int, str]:
-        """Invoke ffmpeg and capture stderr. Monkeypatch in tests."""
-        proc = subprocess.run(
-            argv,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-        stderr = (proc.stderr or b"").decode("utf-8", errors="replace")
-        return int(proc.returncode), stderr
+    def _run(self, argv: list[str], filter_complex: str = "") -> tuple[int, str]:
+        """Invoke ffmpeg and capture stderr.
+
+        If *filter_complex* is provided, it is written to a temporary file and
+        injected into *argv* via ``-filter_complex_script`` so we never exceed
+        the Windows command-line length limit.
+        """
+        import tempfile
+
+        script_path: str | None = None
+        try:
+            if filter_complex:
+                # Write filtergraph to a temp file that ffmpeg will read.
+                fd, script_path = tempfile.mkstemp(suffix=".txt", prefix="ffmpeg_fc_")
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(filter_complex)
+                # Insert -filter_complex_script right after the last -i flag.
+                argv_copy = list(argv)
+                # Find the position just after the last "-i" argument.
+                last_i = -1
+                for idx, arg in enumerate(argv_copy):
+                    if arg == "-i":
+                        last_i = idx
+                insert_pos = last_i + 2 if last_i >= 0 else 1
+                argv_copy[insert_pos:insert_pos] = ["-filter_complex_script", script_path]
+            else:
+                argv_copy = argv
+
+            log.info("FFmpeg command length: %d chars", len(subprocess.list2cmdline(argv_copy)))
+            proc = subprocess.run(
+                argv_copy,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            stderr = (proc.stderr or b"").decode("utf-8", errors="replace")
+            return int(proc.returncode), stderr
+        finally:
+            # Clean up the temp file.
+            if script_path and Path(script_path).exists():
+                try:
+                    os.unlink(script_path)
+                except OSError:
+                    pass
 
 
 def _probe_duration(path: Path) -> float:
     """Best-effort duration probe via ffprobe; 0.0 if unavailable."""
     try:
+        ffprobe_bin = r"C:\Users\KEYHANI\.gemini\antigravity\scratch\Video_Creative_Agent\ffprobe.exe"
         proc = subprocess.run(
             [
-                "ffprobe", "-v", "error",
+                ffprobe_bin, "-v", "error",
                 "-show_entries", "format=duration",
                 "-of", "default=noprint_wrappers=1:nokey=1",
                 str(path),
@@ -175,6 +221,4 @@ def _probe_duration(path: Path) -> float:
     except (FileNotFoundError, ValueError):
         pass
     return 0.0
-    def _quality_args(self) -> list[str]:
-        """ffmpeg argv fragment for video codec + quality + preset (codec-aware)."""
-        return _quality_args_fn(self.codec_profile, self.crf, self.preset)
+

@@ -37,14 +37,17 @@ class Settings(BaseSettings):
         validation_alias="REPLICATE_API_TOKEN",
     )
 
-    # --- Model identifiers on Replicate ---
+    # --- Model identifiers on Replicate (owner/model:version_hash) ---
+    # Version hashes MUST be pinned. Without them, Replicate returns 404 for
+    # cold models even when the model name is valid. Get hashes from the model's
+    # "Versions" tab on replicate.com.
     florence_model: str = Field(
-        default="microsoft/florence-2",
-        description="Florence-2 model identifier on Replicate.",
+        default="lucataco/florence-2-large:da53547e17d45b9cfb48174b2f18af8b83ca020fa76db62136bf9c6616762595",
+        description="Florence-2 model identifier on Replicate (owner/model:version_hash).",
     )
     llava_model: str = Field(
-        default="yorickvp/llava-v1.6-vicuna-13b",
-        description="LLaVA-NeXT model identifier on Replicate.",
+        default="yorickvp/llava-v1.6-vicuna-13b:0603dec596080fa084e26f0ae6d605fc5788ed2b1a0358cd25010619487eae63",
+        description="LLaVA-NeXT model identifier on Replicate (owner/model:version_hash).",
     )
 
     # --- Local embedding model ---
@@ -53,7 +56,7 @@ class Settings(BaseSettings):
         description="Local sentence-transformers model used for binary embeddings.",
     )
     embedding_dim: int = Field(
-        default=512,
+        default=384,
         description="Target embedding dimension (Matryoshka truncation / zero-pad target).",
     )
     embedding_batch_size: int = Field(
