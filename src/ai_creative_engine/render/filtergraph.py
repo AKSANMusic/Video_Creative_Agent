@@ -102,8 +102,8 @@ class FilterGraphBuilder:
         
         zp = (
             f"zoompan=z='{zoom}':"
-            f"x='max(0, min(iw - iw/z, iw*({win.pan_x_start:.6f}+on*{step_x:.8f}) - iw/(2*z)))':"
-            f"y='max(0, min(ih - ih/z, ih*({win.pan_y_start:.6f}+on*{step_y:.8f}) - ih/(2*z)))':"
+            f"x='max(0, min(iw - iw/z, iw*({win.pan_x_start:.6f}+on*({step_x:.8f})) - iw/(2*z)))':"
+            f"y='max(0, min(ih - ih/z, ih*({win.pan_y_start:.6f}+on*({step_y:.8f})) - ih/(2*z)))':"
             f"d={frames}:s={self._dims_target()}:fps={fps_val:.1f}"
         )
         chain = (
@@ -124,7 +124,7 @@ class FilterGraphBuilder:
             return f"{z0:.6f}"
         # on is zoompan's per-output-frame index.
         slope = (z1 - z0) / n
-        return f"{z0:.6f}+on*{slope:.6f}"
+        return f"{z0:.6f}+on*({slope:.6f})"
 
     def _dims_target(self) -> str:
         """WxH format for scale and zoompan (e.g. '1280x720')."""
