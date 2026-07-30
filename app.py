@@ -162,6 +162,7 @@ def run_stage_1(
     images_dir_str: str,
     db_path_str: str,
     api_token: str,
+    clear_workspace: bool = False,
     replicate_delay: float = 11.0,
     progress: gr.Progress = gr.Progress(),
 ) -> Generator[str, None, None]:
@@ -186,6 +187,18 @@ def run_stage_1(
     yield gradio_logger.get_logs()
     
     target_dir = WORK_DIR / "input_images"
+    if clear_workspace:
+        gradio_logger.add_line("🧹 Clearing existing images in workspace input directory...")
+        yield gradio_logger.get_logs()
+        if target_dir.exists():
+            for f in list(target_dir.iterdir()):
+                if f.is_file():
+                    try:
+                        f.unlink()
+                    except Exception as e:
+                        gradio_logger.add_line(f"⚠️ Warning: Could not delete {f.name}: {e}")
+                        yield gradio_logger.get_logs()
+    
     target_dir.mkdir(parents=True, exist_ok=True)
     
     if images_dir_str and Path(images_dir_str).is_dir():
@@ -616,6 +629,7 @@ def run_full_pipeline(
     video_codec: str,
     social_format: str = "custom",
     replicate_delay: float = 1.5,
+    clear_workspace: bool = False,
     progress: gr.Progress = gr.Progress(),
 ) -> Generator[tuple[str, str, str, str | None], None, None]:
     """Execute all four stages sequentially with live continuous log streaming."""
@@ -625,7 +639,7 @@ def run_full_pipeline(
 
     # Stage 1
     progress(0.1, desc="Stage 1: Vision Extraction...")
-    for logs in run_stage_1(images, images_dir_str, db_path_str, api_token, replicate_delay=replicate_delay, progress=progress):
+    for logs in run_stage_1(images, images_dir_str, db_path_str, api_token, clear_workspace=clear_workspace, replicate_delay=replicate_delay, progress=progress):
         yield logs, "{}", "{}", None
         
     # Stage 2
@@ -672,6 +686,11 @@ def build_app() -> gr.Blocks:
                 input_dir = gr.Textbox(
                     label="Source Images Directory Path (Optional)",
                     placeholder="e.g. C:/path/to/images",
+                )
+                clear_workspace_images = gr.Checkbox(
+                    label="Clear Workspace Input Directory First",
+                    value=False,
+                    info="Deletes all images in workspace_runs/input_images before copying the new batch",
                 )
                 input_audio = gr.File(
                     label="Audio Track (MP3 / WAV / FLAC)",
@@ -784,7 +803,7 @@ def build_app() -> gr.Blocks:
         # --- Event Wiring (Live Generator Log Streaming Enabled) -------------
         btn_stage1.click(
             fn=run_stage_1,
-            inputs=[input_images, input_dir, db_path_input, replicate_token, replicate_delay],
+            inputs=[input_images, input_dir, db_path_input, replicate_token, clear_workspace_images, replicate_delay],
             outputs=[status_output],
         )
         btn_stage2.click(
@@ -807,7 +826,7 @@ def build_app() -> gr.Blocks:
             inputs=[
                 input_images, input_dir, input_audio, db_path_input, replicate_token,
                 enable_clap, continuity_weight, cut_grid, fps_input, width_input,
-                height_input, codec_input, social_format, replicate_delay,
+                height_input, codec_input, social_format, replicate_delay, clear_workspace_images,
             ],
             outputs=[status_output, json_audio, json_timeline, video_output],
         )
