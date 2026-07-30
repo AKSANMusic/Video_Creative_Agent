@@ -169,6 +169,8 @@ class FFmpegEncoder:
             if filter_complex:
                 # Write filtergraph to a temp file that ffmpeg will read.
                 fd, script_path = tempfile.mkstemp(suffix=".txt", prefix="ffmpeg_fc_")
+                # Fix for Windows FFmpeg path resolution
+                script_path = Path(script_path).as_posix()
                 with os.fdopen(fd, "w", encoding="utf-8") as fh:
                     fh.write(filter_complex)
                 # Insert -filter_complex_script right after the last -i flag.

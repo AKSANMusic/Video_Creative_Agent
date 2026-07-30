@@ -51,7 +51,11 @@ class CinematicDirector:
             zoom_intensity = 1.08
             if self.settings.saliency_camera_enabled:
                 # Higher energy/tension = more aggressive zoom
-                energy = audio_map.rms_curve[int((entry.start / timeline.duration) * len(audio_map.rms_curve))] if audio_map.rms_curve else 0.5
+                energy = 0.5
+                if audio_map.rms_curve and timeline.duration > 0.0:
+                    idx = int((entry.start / timeline.duration) * len(audio_map.rms_curve))
+                    idx = max(0, min(idx, len(audio_map.rms_curve) - 1))
+                    energy = audio_map.rms_curve[idx]
                 zoom_intensity = 1.05 + 0.10 * (0.4 * energy + 0.6 * tension)
                 zoom_intensity = round(max(1.02, min(zoom_intensity, 1.18)), 4)
             else:
@@ -101,6 +105,8 @@ class CinematicDirector:
 
     def _compute_narrative_act(self, start_time: float, total_duration: float) -> tuple[int, str]:
         """Compute the Act classification (1, 2, or 3) based on timeline progress."""
+        if total_duration <= 0.0:
+            return 1, "Act I (Setup)"
         progress = start_time / total_duration
         if progress < 0.25:
             return 1, "Act I (Setup)"
@@ -118,6 +124,9 @@ class CinematicDirector:
         if not self.settings.director_enabled:
             return entry.transition
 
+        # Ensure transition durations are dynamically capped to not exceed shot duration
+        shot_duration = max(0.01, entry.end - entry.start)
+
         # Transition Intelligence Matrix
         # 1. Zoom Transition: A-roll reveal
         if getattr(img, "image_role", "b_roll") == "a_roll" and index > 0:
@@ -125,16 +134,16 @@ class CinematicDirector:
             if prev_entry.section_index != entry.section_index:
                 # Transitioning into a new section, A-roll reveal: apply quick zoom
                 trans_type = "zoom"
-                trans_dur = 0.5
+                trans_dur = min(0.5, shot_duration * 0.8)
 
         # 2. Dip to Black on major Act boundaries
-        total_dur = max(all_entries[-1].end, 1.0)
+        total_dur = max(all_entries[-1].end if all_entries else 1.0, 1.0)
         act, _ = self._compute_narrative_act(entry.start, total_dur)
         if index > 0:
             prev_act, _ = self._compute_narrative_act(all_entries[index - 1].start, total_dur)
             if prev_act != act:
                 # Transitioning acts: slow cross-fade
                 trans_type = "dissolve"
-                trans_dur = 0.8
+                trans_dur = min(0.8, shot_duration * 0.8)
 
         return Transition(type=trans_type, duration_s=trans_dur)

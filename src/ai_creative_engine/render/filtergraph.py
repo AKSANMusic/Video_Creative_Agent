@@ -95,7 +95,8 @@ class FilterGraphBuilder:
         dx = win.pan_x_end - win.pan_x_start
         dy = win.pan_y_end - win.pan_y_start
         
-        frames_denom = max(1, frames)
+        # 'on' in zoompan goes from 0 to d-1. We need d-1 steps to reach the end exactly.
+        frames_denom = max(1, frames - 1)
         step_x = dx / frames_denom
         step_y = dy / frames_denom
         

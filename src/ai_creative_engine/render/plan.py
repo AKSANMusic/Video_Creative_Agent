@@ -116,44 +116,52 @@ class PlanBuilder:
         for entry in timeline.entries:
             windows.append(self._build_window(entry, total_frames))
 
-        # Apply J/L-cut offsets by shifting boundary frames (Phase 2)
+        # Apply J/L-cut offsets by pre-calculating boundary deltas (Phase 2 fix)
         import dataclasses
-        for i in range(1, len(windows)):
-            entry = timeline.entries[i]
-            offset_ms = getattr(entry, "audio_offset_ms", 0.0)
-            if offset_ms != 0.0:
-                offset_s = offset_ms / 1000.0
-                offset_frames = int(round(offset_s * self.fps))
+        if len(windows) > 1:
+            deltas = [0] * len(windows)
+            for i in range(1, len(windows)):
+                entry = timeline.entries[i]
+                offset_ms = getattr(entry, "audio_offset_ms", 0.0)
+                if offset_ms != 0.0:
+                    offset_frames = int(round((offset_ms / 1000.0) * self.fps))
+                    
+                    size_prev = windows[i-1].end_frame - windows[i-1].start_frame
+                    size_curr = windows[i].end_frame - windows[i].start_frame
+                    
+                    if offset_frames < 0:
+                        offset_frames = max(offset_frames, -(size_prev - 1))
+                    elif offset_frames > 0:
+                        offset_frames = min(offset_frames, size_curr - 1)
+                        
+                    deltas[i] = offset_frames
 
-                base_boundary = self._sec_to_frame(entry.start)
-                new_boundary = base_boundary + offset_frames
+            for i in range(1, len(windows)):
+                if deltas[i] != 0:
+                    delta = deltas[i]
+                    prev_win = windows[i-1]
+                    curr_win = windows[i]
+                    
+                    new_boundary = prev_win.end_frame + delta
+                    
+                    windows[i-1] = dataclasses.replace(
+                        prev_win,
+                        end_frame=new_boundary,
+                        end_time=float(new_boundary / self.fps)
+                    )
+                    windows[i] = dataclasses.replace(
+                        curr_win,
+                        start_frame=new_boundary,
+                        start_time=float(new_boundary / self.fps)
+                    )
 
-                # Clamp to ensure we don't collapse either window.
-                min_boundary = windows[i-1].start_frame + 1
-                max_boundary = windows[i].end_frame - 1
-                new_boundary = max(min_boundary, min(new_boundary, max_boundary))
-
-                windows[i-1] = dataclasses.replace(
-                    windows[i-1],
-                    end_frame=new_boundary,
-                    end_time=float(new_boundary / self.fps)
-                )
-                windows[i] = dataclasses.replace(
-                    windows[i],
-                    start_frame=new_boundary,
-                    start_time=float(new_boundary / self.fps)
-                )
-
-                # Re-clamp transition frames for both adjusted windows for safety.
-                t_frames_prev = windows[i-1].transition_frames
-                max_t_prev = min(t_frames_prev, max(0, (windows[i-1].end_frame - windows[i-1].start_frame) - 1))
-                if max_t_prev != t_frames_prev:
-                    windows[i-1] = dataclasses.replace(windows[i-1], transition_frames=max_t_prev)
-
-                t_frames_curr = windows[i].transition_frames
-                max_t_curr = min(t_frames_curr, max(0, (windows[i].end_frame - windows[i].start_frame) - 1))
-                if max_t_curr != t_frames_curr:
-                    windows[i] = dataclasses.replace(windows[i], transition_frames=max_t_curr)
+            # Re-clamp transitions safely after all shifts are applied
+            for i in range(len(windows)):
+                w = windows[i]
+                t_frames = w.transition_frames
+                max_t = max(0, (w.end_frame - w.start_frame) - 1)
+                if t_frames > max_t:
+                    windows[i] = dataclasses.replace(w, transition_frames=max_t)
 
         plan = RenderPlan(
             timeline=timeline,

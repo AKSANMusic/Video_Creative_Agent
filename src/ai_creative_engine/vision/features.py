@@ -20,8 +20,18 @@ A_ROLL_KEYWORDS = {
 }
 
 
+from concurrent.futures import ThreadPoolExecutor
+
 class VisualFeatureExtractor:
     """Extracts metadata from images locally using PIL, with cv2 fallbacks if available."""
+
+    def extract_batch(self, images_info: list[tuple[Path | str, dict[str, Any] | None]], max_workers: int = 4) -> list[dict[str, Any]]:
+        """Extract features for multiple images asynchronously using a ThreadPoolExecutor."""
+        results = []
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # submit preserves order via map
+            results = list(executor.map(lambda args: self.extract(args[0], args[1]), images_info))
+        return results
 
     def extract(self, image_path: Path | str, metadata_so_far: dict[str, Any] | None = None) -> dict[str, Any]:
         """Extract all Phase 2 features for a given image path."""
